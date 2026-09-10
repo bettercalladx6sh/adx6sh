@@ -1,6 +1,15 @@
+"use client";
 import Image from "next/image";
+import LinkPreview from "@/app/components/link-preview";
 
 const paragraphStyles = "font-inter text-[14px] font-medium text-black";
+
+const LINKS = {
+  kerala: "https://www.google.com/search?q=kerala&ie=UTF-8",
+  twitter: "https://x.com/aadhi_tsx",
+  linkedin: "https://www.linkedin.com/in/adarsh--anilkumar/",
+  youtube: "https://www.youtube.com/@th3atcodeguy",
+} as const;
 
 export default function Home() {
   return (
@@ -49,9 +58,11 @@ export default function Home() {
           </p>
           <span className={paragraphStyles}>
             Beyond my work, I share what I learn through programming, design,
-            and DevOps on documenting projects, experiments, and lessons as I
-            grow. This portfolio is a collection of that journey—the things I
-            build, learn, and explore.
+            and DevOps on{" "}
+            <LinkPreview url={LINKS.youtube} name="YouTube" image="" />,
+            documenting projects, experiments, and lessons as I grow. This
+            portfolio is a collection of that journey—the things I build, learn,
+            and explore.
           </span>
         </div>
       </div>
