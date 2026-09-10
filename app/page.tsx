@@ -1,10 +1,14 @@
 "use client";
 import Image from "next/image";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAnimate } from "motion/react";
 import LinkPreview from "@/app/components/link-preview";
 
 const paragraphStyles = "font-inter text-[14px] font-medium text-black";
+
+const linkStyles =
+  "underline decoration-dotted decoration-[1.3px] underline-offset-4 transition-opacity duration-150 ease-(--ease-out-strong) [@media(hover:hover)]:hover:opacity-70 decoration-black/20";
 
 const LINKS = {
   kerala: "https://www.google.com/search?q=kerala&ie=UTF-8",
@@ -105,6 +109,27 @@ export default function Home() {
             portfolio is a collection of that journey—the things I build, learn,
             and explore.
           </span>
+          <p className={paragraphStyles}>
+            Feel free to reach out to me at{" "}
+            <Link
+              href={LINKS.twitter}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={linkStyles}
+            >
+              @aadhi_tsx
+            </Link>{" "}
+            or connect with me on{" "}
+            <Link
+              href={LINKS.linkedin}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={linkStyles}
+            >
+              LinkedIn
+            </Link>
+            .
+          </p>
         </div>
       </div>
     </div>
