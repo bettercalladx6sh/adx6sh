@@ -1,0 +1,342 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: adx6sh/adx6sh-portfolio-repository
+  CONTAINER_NAME: adx6sh-portfolio
+  APP_PORT: 3000
+
+jobs:
+  # ==========================================
+  # CONTINUOUS INTEGRATION
+  # ==========================================
+
+  ci:
+    name: Continuous Integration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test --if-present
+
+      - name: Build application
+        run: npm run build
+
+  # ==========================================
+  # BUILD & PUSH DOCKER IMAGE
+  # ==========================================
+
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+
+    needs: ci
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate Docker image tag
+        id: meta
+        run: |
+          TAG="sha-${GITHUB_SHA::12}"
+
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          echo "Building image:"
+          echo "${IMAGE_NAME}:${TAG}"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+
+          push: true
+
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
+            ${{ env.IMAGE_NAME }}:latest
+
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+          provenance: true
+          sbom: true
+
+  # ==========================================
+  # CONTINUOUS DEPLOYMENT
+  # ==========================================
+
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+
+    needs: docker
+
+    environment:
+      name: production
+
+    steps:
+      - name: Deploy application to EC2
+        uses: appleboy/ssh-action@v1.2.2
+
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: sha-${{ github.sha }}
+
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
+          APP_PORT: ${{ env.APP_PORT }}
+
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          envs: DOCKERHUB_USERNAME,DOCKERHUB_TOKEN,IMAGE_NAME,IMAGE_TAG,CONTAINER_NAME,APP_PORT
+
+          script: |
+
+            set -Eeuo pipefail
+
+            echo "=========================================="
+            echo "Starting deployment"
+            echo "=========================================="
+
+            echo "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+
+            # ------------------------------------------
+            # Login to Docker Hub
+            # ------------------------------------------
+
+            echo "Logging into Docker Hub..."
+
+            echo "$DOCKERHUB_TOKEN" | docker login \
+              --username "$DOCKERHUB_USERNAME" \
+              --password-stdin
+
+
+            # ------------------------------------------
+            # Store currently running image
+            # ------------------------------------------
+
+            OLD_IMAGE=""
+
+            if docker ps \
+              --filter "name=^/${CONTAINER_NAME}$" \
+              --format "{{.Image}}" | grep -q .; then
+
+              OLD_IMAGE=$(docker ps \
+                --filter "name=^/${CONTAINER_NAME}$" \
+                --format "{{.Image}}")
+
+              echo "Current image: ${OLD_IMAGE}"
+
+            fi
+
+
+            # ------------------------------------------
+            # Pull new image
+            # ------------------------------------------
+
+            echo "Pulling new Docker image..."
+
+            docker pull "${IMAGE_NAME}:${IMAGE_TAG}"
+
+
+            # ------------------------------------------
+            # Stop old container
+            # ------------------------------------------
+
+            echo "Stopping old container..."
+
+            docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+
+
+            # ------------------------------------------
+            # Remove old container
+            # ------------------------------------------
+
+            echo "Removing old container..."
+
+            docker rm "${CONTAINER_NAME}" 2>/dev/null || true
+
+
+            # ------------------------------------------
+            # Start new container
+            # ------------------------------------------
+
+            echo "Starting new container..."
+
+            docker run -d \
+              --name "${CONTAINER_NAME}" \
+              --restart unless-stopped \
+              -p "127.0.0.1:${APP_PORT}:${APP_PORT}" \
+              "${IMAGE_NAME}:${IMAGE_TAG}"
+
+
+            # ------------------------------------------
+            # Health check
+            # ------------------------------------------
+
+            echo "Running application health check..."
+
+            SUCCESS=false
+
+            for i in {1..12}; do
+
+              sleep 5
+
+              if docker ps \
+                --filter "name=^/${CONTAINER_NAME}$" \
+                --filter "status=running" \
+                --format "{{.Names}}" |
+                grep -q "^${CONTAINER_NAME}$"; then
+
+                if curl \
+                  --fail \
+                  --silent \
+                  --show-error \
+                  --max-time 5 \
+                  "http://127.0.0.1:${APP_PORT}" > /dev/null; then
+
+                  SUCCESS=true
+                  break
+
+                fi
+
+              fi
+
+              echo "Health check attempt ${i}/12 failed."
+
+            done
+
+
+            # ------------------------------------------
+            # Rollback on failure
+            # ------------------------------------------
+
+            if [ "$SUCCESS" != "true" ]; then
+
+              echo "=========================================="
+              echo "DEPLOYMENT FAILED"
+              echo "=========================================="
+
+              echo "Container logs:"
+
+              docker logs "${CONTAINER_NAME}" || true
+
+
+              if [ -n "$OLD_IMAGE" ]; then
+
+                echo "Rolling back to:"
+                echo "${OLD_IMAGE}"
+
+                docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+
+                docker rm "${CONTAINER_NAME}" 2>/dev/null || true
+
+                docker run -d \
+                  --name "${CONTAINER_NAME}" \
+                  --restart unless-stopped \
+                  -p "127.0.0.1:${APP_PORT}:${APP_PORT}" \
+                  "${OLD_IMAGE}"
+
+                sleep 5
+
+                if docker ps \
+                  --filter "name=^/${CONTAINER_NAME}$" \
+                  --filter "status=running" \
+                  --format "{{.Names}}" |
+                  grep -q "^${CONTAINER_NAME}$"; then
+
+                  echo "Rollback successful."
+
+                else
+
+                  echo "Rollback failed."
+                  exit 1
+
+                fi
+
+              fi
+
+              exit 1
+
+            fi
+
+
+            # ------------------------------------------
+            # Deployment successful
+            # ------------------------------------------
+
+            echo "=========================================="
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "=========================================="
+
+            echo "Running container:"
+
+            docker ps \
+              --filter "name=^/${CONTAINER_NAME}$"
+
+
+            # ------------------------------------------
+            # Cleanup old Docker images
+            # ------------------------------------------
+
+            echo "Cleaning unused Docker images..."
+
+            docker image prune -af \
+              --filter "until=168h" || true
+
+
+            echo "=========================================="
+            echo "Deployment completed successfully."
+            echo "=========================================="
