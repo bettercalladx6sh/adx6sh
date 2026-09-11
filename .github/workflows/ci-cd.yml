@@ -535,7 +535,7 @@ jobs:
                 docker run -d \
                   --name "${CONTAINER_NAME}" \
                   --restart unless-stopped \
-                  -p "127.0.0.1:${APP_PORT}:${APP_PORT}" \
+                  -p "${APP_PORT}:${APP_PORT}" \
                   "${OLD_IMAGE}"
 
                 sleep 5
