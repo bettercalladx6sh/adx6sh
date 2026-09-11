@@ -17,22 +17,41 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # ==================================================
+  # AWS / S3
+  # ==================================================
+
+  AWS_REGION: ap-south-1
+  S3_BUCKET: adx6sh-portfolio
+
+  # ==================================================
+  # Docker / EC2
+  # ==================================================
+
   IMAGE_NAME: adx6sh/adx6sh-portfolio-repository
   CONTAINER_NAME: adx6sh-portfolio
   APP_PORT: 3000
 
 jobs:
-  # ==========================================
+  # ==================================================
   # CONTINUOUS INTEGRATION
-  # ==========================================
+  # ==================================================
 
   ci:
     name: Continuous Integration
     runs-on: ubuntu-latest
 
     steps:
+      # ------------------------------------------
+      # Checkout
+      # ------------------------------------------
+
       - name: Checkout source code
         uses: actions/checkout@v4
+
+      # ------------------------------------------
+      # Node.js
+      # ------------------------------------------
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -40,24 +59,181 @@ jobs:
           node-version: 22
           cache: npm
 
+      # ------------------------------------------
+      # Install dependencies
+      # ------------------------------------------
+
       - name: Install dependencies
         run: npm ci
+
+      # ------------------------------------------
+      # Lint
+      # ------------------------------------------
 
       - name: Run lint
         run: npm run lint
 
+      # ------------------------------------------
+      # Tests
+      # ------------------------------------------
+
       - name: Run tests
         run: npm test --if-present
+
+      # ------------------------------------------
+      # Build Next.js application
+      # ------------------------------------------
 
       - name: Build application
         run: npm run build
 
-  # ==========================================
-  # BUILD & PUSH DOCKER IMAGE
-  # ==========================================
+      # ------------------------------------------
+      # Verify Next.js static export
+      # ------------------------------------------
+
+      - name: Verify static export
+        run: |
+          set -e
+
+          if [ ! -d "out" ]; then
+            echo "ERROR: out/ directory was not generated."
+            echo "Make sure next.config.ts/js contains:"
+            echo "output: 'export'"
+            exit 1
+          fi
+
+          echo "=========================================="
+          echo "Static export generated successfully"
+          echo "=========================================="
+
+          echo "Build size:"
+          du -sh out/
+
+          echo "Generated files:"
+          find out -maxdepth 2 -type f | head -50
+
+      # ------------------------------------------
+      # Upload static build
+      # ------------------------------------------
+
+      - name: Upload Next.js build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-static-build
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
+
+  # ==================================================
+  # S3 DEPLOYMENT
+  # ==================================================
+
+  deploy-s3:
+    name: Deploy to Amazon S3
+    runs-on: ubuntu-latest
+
+    needs: ci
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    environment:
+      name: production
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      # ------------------------------------------
+      # Download build artifact
+      # ------------------------------------------
+
+      - name: Download Next.js build
+        uses: actions/download-artifact@v4
+        with:
+          name: nextjs-static-build
+          path: out/
+
+      # ------------------------------------------
+      # Verify artifact
+      # ------------------------------------------
+
+      - name: Verify build artifact
+        run: |
+          set -e
+
+          if [ ! -d "out" ]; then
+            echo "ERROR: out/ directory does not exist."
+            exit 1
+          fi
+
+          echo "Build artifact verified."
+          du -sh out/
+
+      # ------------------------------------------
+      # Configure AWS OIDC
+      # ------------------------------------------
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # ------------------------------------------
+      # Verify AWS identity
+      # ------------------------------------------
+
+      - name: Verify AWS credentials
+        run: |
+          echo "AWS identity:"
+          aws sts get-caller-identity
+
+      # ------------------------------------------
+      # Deploy to S3
+      # ------------------------------------------
+
+      - name: Deploy website to S3
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Starting S3 deployment"
+          echo "=========================================="
+
+          echo "Bucket: s3://${S3_BUCKET}"
+
+          aws s3 sync out/ \
+            "s3://${S3_BUCKET}" \
+            --delete
+
+      # ------------------------------------------
+      # Verify S3 deployment
+      # ------------------------------------------
+
+      - name: Verify S3 deployment
+        run: |
+          echo "=========================================="
+          echo "S3 DEPLOYMENT SUCCESSFUL"
+          echo "=========================================="
+
+          echo "Bucket:"
+          echo "s3://${S3_BUCKET}"
+
+          echo ""
+          echo "Sample objects:"
+
+          aws s3 ls \
+            "s3://${S3_BUCKET}" \
+            --recursive | head -30
+
+  # ==================================================
+  # BUILD AND PUSH DOCKER IMAGE
+  # ==================================================
 
   docker:
-    name: Build & Push Docker Image
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
 
     needs: ci
@@ -68,8 +244,23 @@ jobs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
 
     steps:
+      # ------------------------------------------
+      # Checkout
+      # ------------------------------------------
+
       - name: Checkout source code
         uses: actions/checkout@v4
+
+      # ------------------------------------------
+      # Setup Docker Buildx
+      # ------------------------------------------
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ------------------------------------------
+      # Login to Docker Hub
+      # ------------------------------------------
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -77,25 +268,32 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      # ------------------------------------------
+      # Generate immutable image tag
+      # ------------------------------------------
 
       - name: Generate Docker image tag
         id: meta
+        shell: bash
         run: |
-          TAG="sha-${GITHUB_SHA::12}"
+          IMAGE_TAG="sha-${GITHUB_SHA}"
 
-          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
-          echo "Building image:"
-          echo "${IMAGE_NAME}:${TAG}"
+          echo "=========================================="
+          echo "Docker image"
+          echo "=========================================="
+          echo "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      # ------------------------------------------
+      # Build and push image
+      # ------------------------------------------
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-
           push: true
 
           tags: |
@@ -108,20 +306,26 @@ jobs:
           provenance: true
           sbom: true
 
-  # ==========================================
-  # CONTINUOUS DEPLOYMENT
-  # ==========================================
+  # ==================================================
+  # EC2 DEPLOYMENT
+  # ==================================================
 
-  deploy:
+  deploy-ec2:
     name: Deploy to EC2
     runs-on: ubuntu-latest
 
     needs: docker
 
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
     environment:
       name: production
 
     steps:
+      # ------------------------------------------
+      # Deploy to EC2
+      # ------------------------------------------
+
       - name: Deploy application to EC2
         uses: appleboy/ssh-action@v1.2.2
 
@@ -130,7 +334,7 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          IMAGE_TAG: sha-${{ github.sha }}
+          IMAGE_TAG: ${{ needs.docker.outputs.image_tag }}
 
           CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
           APP_PORT: ${{ env.APP_PORT }}
@@ -147,10 +351,13 @@ jobs:
             set -Eeuo pipefail
 
             echo "=========================================="
-            echo "Starting deployment"
+            echo "Starting EC2 deployment"
             echo "=========================================="
 
             echo "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "Container: ${CONTAINER_NAME}"
+            echo "Application port: ${APP_PORT}"
+
 
             # ------------------------------------------
             # Login to Docker Hub
@@ -175,15 +382,19 @@ jobs:
 
               OLD_IMAGE=$(docker ps \
                 --filter "name=^/${CONTAINER_NAME}$" \
-                --format "{{.Image}}")
+                --format "{{.Image}}" | head -1)
 
               echo "Current image: ${OLD_IMAGE}"
+
+            else
+
+              echo "No existing container found."
 
             fi
 
 
             # ------------------------------------------
-            # Pull new image
+            # Pull new Docker image
             # ------------------------------------------
 
             echo "Pulling new Docker image..."
@@ -248,6 +459,9 @@ jobs:
                   "http://127.0.0.1:${APP_PORT}" > /dev/null; then
 
                   SUCCESS=true
+
+                  echo "Application is healthy."
+
                   break
 
                 fi
@@ -276,8 +490,10 @@ jobs:
 
               if [ -n "$OLD_IMAGE" ]; then
 
-                echo "Rolling back to:"
-                echo "${OLD_IMAGE}"
+                echo "=========================================="
+                echo "Starting rollback"
+                echo "Previous image: ${OLD_IMAGE}"
+                echo "=========================================="
 
                 docker stop "${CONTAINER_NAME}" 2>/dev/null || true
 
@@ -302,9 +518,14 @@ jobs:
                 else
 
                   echo "Rollback failed."
+
                   exit 1
 
                 fi
+
+              else
+
+                echo "No previous image available for rollback."
 
               fi
 
@@ -318,7 +539,7 @@ jobs:
             # ------------------------------------------
 
             echo "=========================================="
-            echo "DEPLOYMENT SUCCESSFUL"
+            echo "EC2 DEPLOYMENT SUCCESSFUL"
             echo "=========================================="
 
             echo "Running container:"
@@ -328,13 +549,13 @@ jobs:
 
 
             # ------------------------------------------
-            # Cleanup old Docker images
+            # Cleanup old unused Docker images
             # ------------------------------------------
 
             echo "Cleaning unused Docker images..."
 
             docker image prune -af \
-              --filter "until=168h" || true
+              --filter "until=72h" || true
 
 
             echo "=========================================="
