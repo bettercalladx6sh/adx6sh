@@ -171,6 +171,55 @@ jobs:
           du -sh out/
 
       # ------------------------------------------
+      # Debug GitHub OIDC claims
+      # ------------------------------------------
+
+      - name: Debug GitHub OIDC claims
+        shell: bash
+        run: |
+          set -e
+
+          TOKEN=$(curl -sS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" |
+            jq -r '.value')
+
+          python3 - "$TOKEN" <<'PY'
+          import sys
+          import base64
+          import json
+
+          token = sys.argv[1]
+
+          # Decode JWT payload only.
+          # The actual token is NOT printed.
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+
+          claims = json.loads(
+              base64.urlsafe_b64decode(payload)
+          )
+
+          print("==========================================")
+          print("GitHub OIDC Claims")
+          print("==========================================")
+
+          for key in [
+              "iss",
+              "sub",
+              "aud",
+              "repository",
+              "repository_id",
+              "repository_owner",
+              "repository_owner_id",
+              "environment"
+          ]:
+              print(f"{key}: {claims.get(key)}")
+
+          print("==========================================")
+          PY
+
+      # ------------------------------------------
       # Configure AWS OIDC
       # ------------------------------------------
 
@@ -222,6 +271,7 @@ jobs:
           echo "s3://${S3_BUCKET}"
 
           echo ""
+
           echo "Sample objects:"
 
           aws s3 ls \
@@ -283,6 +333,7 @@ jobs:
           echo "=========================================="
           echo "Docker image"
           echo "=========================================="
+
           echo "${IMAGE_NAME}:${IMAGE_TAG}"
 
       # ------------------------------------------
@@ -332,10 +383,8 @@ jobs:
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_TAG: ${{ needs.docker.outputs.image_tag }}
-
           CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
           APP_PORT: ${{ env.APP_PORT }}
 
@@ -347,7 +396,6 @@ jobs:
           envs: DOCKERHUB_USERNAME,DOCKERHUB_TOKEN,IMAGE_NAME,IMAGE_TAG,CONTAINER_NAME,APP_PORT
 
           script: |
-
             set -Eeuo pipefail
 
             echo "=========================================="
@@ -358,7 +406,6 @@ jobs:
             echo "Container: ${CONTAINER_NAME}"
             echo "Application port: ${APP_PORT}"
 
-
             # ------------------------------------------
             # Login to Docker Hub
             # ------------------------------------------
@@ -368,7 +415,6 @@ jobs:
             echo "$DOCKERHUB_TOKEN" | docker login \
               --username "$DOCKERHUB_USERNAME" \
               --password-stdin
-
 
             # ------------------------------------------
             # Store currently running image
@@ -387,11 +433,8 @@ jobs:
               echo "Current image: ${OLD_IMAGE}"
 
             else
-
               echo "No existing container found."
-
             fi
-
 
             # ------------------------------------------
             # Pull new Docker image
@@ -401,7 +444,6 @@ jobs:
 
             docker pull "${IMAGE_NAME}:${IMAGE_TAG}"
 
-
             # ------------------------------------------
             # Stop old container
             # ------------------------------------------
@@ -410,7 +452,6 @@ jobs:
 
             docker stop "${CONTAINER_NAME}" 2>/dev/null || true
 
-
             # ------------------------------------------
             # Remove old container
             # ------------------------------------------
@@ -418,7 +459,6 @@ jobs:
             echo "Removing old container..."
 
             docker rm "${CONTAINER_NAME}" 2>/dev/null || true
-
 
             # ------------------------------------------
             # Start new container
@@ -432,7 +472,6 @@ jobs:
               -p "127.0.0.1:${APP_PORT}:${APP_PORT}" \
               "${IMAGE_NAME}:${IMAGE_TAG}"
 
-
             # ------------------------------------------
             # Health check
             # ------------------------------------------
@@ -442,7 +481,6 @@ jobs:
             SUCCESS=false
 
             for i in {1..12}; do
-
               sleep 5
 
               if docker ps \
@@ -463,15 +501,11 @@ jobs:
                   echo "Application is healthy."
 
                   break
-
                 fi
-
               fi
 
               echo "Health check attempt ${i}/12 failed."
-
             done
-
 
             # ------------------------------------------
             # Rollback on failure
@@ -486,7 +520,6 @@ jobs:
               echo "Container logs:"
 
               docker logs "${CONTAINER_NAME}" || true
-
 
               if [ -n "$OLD_IMAGE" ]; then
 
@@ -530,9 +563,7 @@ jobs:
               fi
 
               exit 1
-
             fi
-
 
             # ------------------------------------------
             # Deployment successful
@@ -547,7 +578,6 @@ jobs:
             docker ps \
               --filter "name=^/${CONTAINER_NAME}$"
 
-
             # ------------------------------------------
             # Cleanup old unused Docker images
             # ------------------------------------------
@@ -556,7 +586,6 @@ jobs:
 
             docker image prune -af \
               --filter "until=72h" || true
-
 
             echo "=========================================="
             echo "Deployment completed successfully."
