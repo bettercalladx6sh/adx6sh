@@ -469,7 +469,7 @@ jobs:
             docker run -d \
               --name "${CONTAINER_NAME}" \
               --restart unless-stopped \
-              -p "127.0.0.1:${APP_PORT}:${APP_PORT}" \
+              -p "${APP_PORT}:${APP_PORT}" \
               "${IMAGE_NAME}:${IMAGE_TAG}"
 
             # ------------------------------------------
