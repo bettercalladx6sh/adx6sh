@@ -18,10 +18,12 @@ concurrency:
 
 env:
   # ==================================================
-  # AWS / S3
+  # AWS
   # ==================================================
 
-  AWS_REGION: ap-south-1
+  S3_REGION: ap-south-1
+  SSM_REGION: ap-south-2
+
   S3_BUCKET: adx6sh-portfolio
 
   # ==================================================
@@ -31,6 +33,13 @@ env:
   IMAGE_NAME: adx6sh/adx6sh-portfolio-repository
   CONTAINER_NAME: adx6sh-portfolio
   APP_PORT: 3000
+
+  # ==================================================
+  # Private EC2 instances
+  # ==================================================
+
+  PRIVATE_EC2_1: i-0c6fba2bb2b5cef4f
+  PRIVATE_EC2_2: i-014c8ad0fc831917b
 
 jobs:
   # ==================================================
@@ -42,16 +51,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ------------------------------------------
-      # Checkout
-      # ------------------------------------------
-
       - name: Checkout source code
         uses: actions/checkout@v4
-
-      # ------------------------------------------
-      # Node.js
-      # ------------------------------------------
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -59,37 +60,17 @@ jobs:
           node-version: 22
           cache: npm
 
-      # ------------------------------------------
-      # Install dependencies
-      # ------------------------------------------
-
       - name: Install dependencies
         run: npm ci
-
-      # ------------------------------------------
-      # Lint
-      # ------------------------------------------
 
       - name: Run lint
         run: npm run lint
 
-      # ------------------------------------------
-      # Tests
-      # ------------------------------------------
-
       - name: Run tests
         run: npm test --if-present
 
-      # ------------------------------------------
-      # Build Next.js application
-      # ------------------------------------------
-
       - name: Build application
         run: npm run build
-
-      # ------------------------------------------
-      # Verify Next.js static export
-      # ------------------------------------------
 
       - name: Verify static export
         run: |
@@ -97,24 +78,15 @@ jobs:
 
           if [ ! -d "out" ]; then
             echo "ERROR: out/ directory was not generated."
-            echo "Make sure next.config.ts/js contains:"
-            echo "output: 'export'"
             exit 1
           fi
 
-          echo "=========================================="
-          echo "Static export generated successfully"
-          echo "=========================================="
+          echo "Static export generated successfully."
 
-          echo "Build size:"
           du -sh out/
 
           echo "Generated files:"
           find out -maxdepth 2 -type f | head -50
-
-      # ------------------------------------------
-      # Upload static build
-      # ------------------------------------------
 
       - name: Upload Next.js build artifact
         uses: actions/upload-artifact@v4
@@ -144,19 +116,11 @@ jobs:
       contents: read
 
     steps:
-      # ------------------------------------------
-      # Download build artifact
-      # ------------------------------------------
-
       - name: Download Next.js build
         uses: actions/download-artifact@v4
         with:
           name: nextjs-static-build
           path: out/
-
-      # ------------------------------------------
-      # Verify artifact
-      # ------------------------------------------
 
       - name: Verify build artifact
         run: |
@@ -168,80 +132,20 @@ jobs:
           fi
 
           echo "Build artifact verified."
+
           du -sh out/
-
-      # ------------------------------------------
-      # Debug GitHub OIDC claims
-      # ------------------------------------------
-
-      - name: Debug GitHub OIDC claims
-        shell: bash
-        run: |
-          set -e
-
-          TOKEN=$(curl -sS \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" |
-            jq -r '.value')
-
-          python3 - "$TOKEN" <<'PY'
-          import sys
-          import base64
-          import json
-
-          token = sys.argv[1]
-
-          # Decode JWT payload only.
-          # The actual token is NOT printed.
-          payload = token.split(".")[1]
-          payload += "=" * (-len(payload) % 4)
-
-          claims = json.loads(
-              base64.urlsafe_b64decode(payload)
-          )
-
-          print("==========================================")
-          print("GitHub OIDC Claims")
-          print("==========================================")
-
-          for key in [
-              "iss",
-              "sub",
-              "aud",
-              "repository",
-              "repository_id",
-              "repository_owner",
-              "repository_owner_id",
-              "environment"
-          ]:
-              print(f"{key}: {claims.get(key)}")
-
-          print("==========================================")
-          PY
-
-      # ------------------------------------------
-      # Configure AWS OIDC
-      # ------------------------------------------
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ env.S3_REGION }}
           audience: sts.amazonaws.com
-
-      # ------------------------------------------
-      # Verify AWS identity
-      # ------------------------------------------
 
       - name: Verify AWS credentials
         run: |
           echo "AWS identity:"
           aws sts get-caller-identity
-
-      # ------------------------------------------
-      # Deploy to S3
-      # ------------------------------------------
 
       - name: Deploy website to S3
         run: |
@@ -252,14 +156,12 @@ jobs:
           echo "=========================================="
 
           echo "Bucket: s3://${S3_BUCKET}"
+          echo "Region: ${S3_REGION}"
 
           aws s3 sync out/ \
             "s3://${S3_BUCKET}" \
+            --region "${S3_REGION}" \
             --delete
-
-      # ------------------------------------------
-      # Verify S3 deployment
-      # ------------------------------------------
 
       - name: Verify S3 deployment
         run: |
@@ -267,15 +169,9 @@ jobs:
           echo "S3 DEPLOYMENT SUCCESSFUL"
           echo "=========================================="
 
-          echo "Bucket:"
-          echo "s3://${S3_BUCKET}"
-
-          echo ""
-
-          echo "Sample objects:"
-
           aws s3 ls \
             "s3://${S3_BUCKET}" \
+            --region "${S3_REGION}" \
             --recursive | head -30
 
   # ==================================================
@@ -294,33 +190,17 @@ jobs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
 
     steps:
-      # ------------------------------------------
-      # Checkout
-      # ------------------------------------------
-
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      # ------------------------------------------
-      # Setup Docker Buildx
-      # ------------------------------------------
-
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      # ------------------------------------------
-      # Login to Docker Hub
-      # ------------------------------------------
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # ------------------------------------------
-      # Generate immutable image tag
-      # ------------------------------------------
 
       - name: Generate Docker image tag
         id: meta
@@ -335,10 +215,6 @@ jobs:
           echo "=========================================="
 
           echo "${IMAGE_NAME}:${IMAGE_TAG}"
-
-      # ------------------------------------------
-      # Build and push image
-      # ------------------------------------------
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -358,235 +234,473 @@ jobs:
           sbom: true
 
   # ==================================================
-  # EC2 DEPLOYMENT
+  # PRIVATE EC2 DEPLOYMENT VIA SSM
   # ==================================================
 
   deploy-ec2:
-    name: Deploy to EC2
+    name: Deploy to Private EC2 via SSM
     runs-on: ubuntu-latest
 
     needs: docker
 
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-    environment:
-      name: production
+    # IMPORTANT:
+    # Do NOT add environment: production here.
+    #
+    # The IAM trust policy currently expects:
+    # repo:bettercalladx6sh/adx6sh:ref:refs/heads/main
+
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       # ------------------------------------------
-      # Deploy to EC2
+      # Configure AWS credentials using OIDC
       # ------------------------------------------
 
-      - name: Deploy application to EC2
-        uses: appleboy/ssh-action@v1.2.2
-
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          IMAGE_TAG: ${{ needs.docker.outputs.image_tag }}
-          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
-          APP_PORT: ${{ env.APP_PORT }}
-
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          role-to-assume: ${{ secrets.AWS_SSM_ROLE_ARN }}
+          aws-region: ${{ env.SSM_REGION }}
+          audience: sts.amazonaws.com
 
-          envs: DOCKERHUB_USERNAME,DOCKERHUB_TOKEN,IMAGE_NAME,IMAGE_TAG,CONTAINER_NAME,APP_PORT
+      # ------------------------------------------
+      # Verify AWS identity
+      # ------------------------------------------
 
-          script: |
-            set -Eeuo pipefail
+      - name: Verify AWS credentials
+        run: |
+          echo "=========================================="
+          echo "AWS Identity"
+          echo "=========================================="
 
-            echo "=========================================="
-            echo "Starting EC2 deployment"
-            echo "=========================================="
+          aws sts get-caller-identity
 
-            echo "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
-            echo "Container: ${CONTAINER_NAME}"
-            echo "Application port: ${APP_PORT}"
+      # ------------------------------------------
+      # Verify SSM instances
+      # ------------------------------------------
 
-            # ------------------------------------------
-            # Login to Docker Hub
-            # ------------------------------------------
+      - name: Verify EC2 instances are online
+        run: |
+          set -e
 
-            echo "Logging into Docker Hub..."
+          echo "=========================================="
+          echo "Checking EC2 #1"
+          echo "=========================================="
 
-            echo "$DOCKERHUB_TOKEN" | docker login \
-              --username "$DOCKERHUB_USERNAME" \
-              --password-stdin
+          aws ssm describe-instance-information \
+            --region "${SSM_REGION}" \
+            --filters "Key=InstanceIds,Values=${PRIVATE_EC2_1}"
 
-            # ------------------------------------------
-            # Store currently running image
-            # ------------------------------------------
+          echo ""
 
-            OLD_IMAGE=""
+          echo "=========================================="
+          echo "Checking EC2 #2"
+          echo "=========================================="
+
+          aws ssm describe-instance-information \
+            --region "${SSM_REGION}" \
+            --filters "Key=InstanceIds,Values=${PRIVATE_EC2_2}"
+
+      # ------------------------------------------
+      # Deploy EC2 #1
+      # ------------------------------------------
+
+      - name: Deploy to Private EC2 #1
+        run: |
+
+          set -e
+
+          echo "=========================================="
+          echo "Deploying to EC2 #1"
+          echo "Instance: ${PRIVATE_EC2_1}"
+          echo "=========================================="
+
+          DEPLOY_SCRIPT=$(cat <<EOF
+          set -Eeuo pipefail
+
+          echo "=========================================="
+          echo "Starting EC2 #1 deployment"
+          echo "=========================================="
+
+          echo "Image:"
+          echo "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+
+          echo ""
+          echo "Checking Docker..."
+
+          docker --version
+
+          echo ""
+          echo "Pulling new image..."
+
+          docker pull \
+            "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+
+          echo ""
+          echo "Checking existing container..."
+
+          OLD_IMAGE=""
+
+          if docker ps \
+            --filter "name=^/${CONTAINER_NAME}$" \
+            --format "{{.Image}}" | grep -q .; then
+
+            OLD_IMAGE=\$(docker ps \
+              --filter "name=^/${CONTAINER_NAME}$" \
+              --format "{{.Image}}" | head -1)
+
+            echo "Current image: \${OLD_IMAGE}"
+
+          else
+
+            echo "No existing container found."
+
+          fi
+
+          echo ""
+          echo "Stopping old container..."
+
+          docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+
+          echo ""
+          echo "Removing old container..."
+
+          docker rm "${CONTAINER_NAME}" 2>/dev/null || true
+
+          echo ""
+          echo "Starting new container..."
+
+          docker run -d \
+            --name "${CONTAINER_NAME}" \
+            --restart unless-stopped \
+            -p "${APP_PORT}:${APP_PORT}" \
+            "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+
+          echo ""
+          echo "Running health check..."
+
+          SUCCESS=false
+
+          for i in {1..12}; do
+
+            sleep 5
 
             if docker ps \
               --filter "name=^/${CONTAINER_NAME}$" \
-              --format "{{.Image}}" | grep -q .; then
+              --filter "status=running" \
+              --format "{{.Names}}" |
+              grep -q "^${CONTAINER_NAME}$"; then
 
-              OLD_IMAGE=$(docker ps \
-                --filter "name=^/${CONTAINER_NAME}$" \
-                --format "{{.Image}}" | head -1)
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                --max-time 5 \
+                "http://127.0.0.1:${APP_PORT}" > /dev/null; then
 
-              echo "Current image: ${OLD_IMAGE}"
+                SUCCESS=true
 
-            else
-              echo "No existing container found."
-            fi
+                echo "Application is healthy."
 
-            # ------------------------------------------
-            # Pull new Docker image
-            # ------------------------------------------
-
-            echo "Pulling new Docker image..."
-
-            docker pull "${IMAGE_NAME}:${IMAGE_TAG}"
-
-            # ------------------------------------------
-            # Stop old container
-            # ------------------------------------------
-
-            echo "Stopping old container..."
-
-            docker stop "${CONTAINER_NAME}" 2>/dev/null || true
-
-            # ------------------------------------------
-            # Remove old container
-            # ------------------------------------------
-
-            echo "Removing old container..."
-
-            docker rm "${CONTAINER_NAME}" 2>/dev/null || true
-
-            # ------------------------------------------
-            # Start new container
-            # ------------------------------------------
-
-            echo "Starting new container..."
-
-            docker run -d \
-              --name "${CONTAINER_NAME}" \
-              --restart unless-stopped \
-              -p "${APP_PORT}:${APP_PORT}" \
-              "${IMAGE_NAME}:${IMAGE_TAG}"
-
-            # ------------------------------------------
-            # Health check
-            # ------------------------------------------
-
-            echo "Running application health check..."
-
-            SUCCESS=false
-
-            for i in {1..12}; do
-              sleep 5
-
-              if docker ps \
-                --filter "name=^/${CONTAINER_NAME}$" \
-                --filter "status=running" \
-                --format "{{.Names}}" |
-                grep -q "^${CONTAINER_NAME}$"; then
-
-                if curl \
-                  --fail \
-                  --silent \
-                  --show-error \
-                  --max-time 5 \
-                  "http://127.0.0.1:${APP_PORT}" > /dev/null; then
-
-                  SUCCESS=true
-
-                  echo "Application is healthy."
-
-                  break
-                fi
-              fi
-
-              echo "Health check attempt ${i}/12 failed."
-            done
-
-            # ------------------------------------------
-            # Rollback on failure
-            # ------------------------------------------
-
-            if [ "$SUCCESS" != "true" ]; then
-
-              echo "=========================================="
-              echo "DEPLOYMENT FAILED"
-              echo "=========================================="
-
-              echo "Container logs:"
-
-              docker logs "${CONTAINER_NAME}" || true
-
-              if [ -n "$OLD_IMAGE" ]; then
-
-                echo "=========================================="
-                echo "Starting rollback"
-                echo "Previous image: ${OLD_IMAGE}"
-                echo "=========================================="
-
-                docker stop "${CONTAINER_NAME}" 2>/dev/null || true
-
-                docker rm "${CONTAINER_NAME}" 2>/dev/null || true
-
-                docker run -d \
-                  --name "${CONTAINER_NAME}" \
-                  --restart unless-stopped \
-                  -p "${APP_PORT}:${APP_PORT}" \
-                  "${OLD_IMAGE}"
-
-                sleep 5
-
-                if docker ps \
-                  --filter "name=^/${CONTAINER_NAME}$" \
-                  --filter "status=running" \
-                  --format "{{.Names}}" |
-                  grep -q "^${CONTAINER_NAME}$"; then
-
-                  echo "Rollback successful."
-
-                else
-
-                  echo "Rollback failed."
-
-                  exit 1
-
-                fi
-
-              else
-
-                echo "No previous image available for rollback."
+                break
 
               fi
 
-              exit 1
             fi
 
-            # ------------------------------------------
-            # Deployment successful
-            # ------------------------------------------
+            echo "Health check attempt \${i}/12 failed."
+
+          done
+
+          if [ "\${SUCCESS}" != "true" ]; then
 
             echo "=========================================="
-            echo "EC2 DEPLOYMENT SUCCESSFUL"
+            echo "DEPLOYMENT FAILED"
             echo "=========================================="
 
-            echo "Running container:"
-
-            docker ps \
+            docker ps -a \
               --filter "name=^/${CONTAINER_NAME}$"
 
-            # ------------------------------------------
-            # Cleanup old unused Docker images
-            # ------------------------------------------
+            echo ""
+            echo "Container logs:"
 
-            echo "Cleaning unused Docker images..."
+            docker logs "${CONTAINER_NAME}" || true
 
-            docker image prune -af \
-              --filter "until=72h" || true
+            if [ -n "\${OLD_IMAGE}" ]; then
+
+              echo ""
+              echo "Starting rollback..."
+
+              docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+
+              docker rm "${CONTAINER_NAME}" 2>/dev/null || true
+
+              docker run -d \
+                --name "${CONTAINER_NAME}" \
+                --restart unless-stopped \
+                -p "${APP_PORT}:${APP_PORT}" \
+                "\${OLD_IMAGE}"
+
+              sleep 5
+
+              echo "Rollback completed."
+
+            fi
+
+            exit 1
+
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "EC2 #1 DEPLOYMENT SUCCESSFUL"
+          echo "=========================================="
+
+          docker ps \
+            --filter "name=^/${CONTAINER_NAME}$"
+
+          docker image prune -af \
+            --filter "until=72h" || true
+
+          EOF
+          )
+
+          COMMAND_ID=$(aws ssm send-command \
+            --region "${SSM_REGION}" \
+            --instance-ids "${PRIVATE_EC2_1}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy portfolio ${GITHUB_SHA}" \
+            --parameters "commands=${DEPLOY_SCRIPT}" \
+            --timeout-seconds 1200 \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: ${COMMAND_ID}"
+
+          echo ""
+          echo "Waiting for deployment..."
+
+          aws ssm wait command-executed \
+            --region "${SSM_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${PRIVATE_EC2_1}"
+
+          echo ""
+          echo "Deployment result:"
+
+          aws ssm get-command-invocation \
+            --region "${SSM_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${PRIVATE_EC2_1}" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output yaml
+
+          STATUS=$(aws ssm get-command-invocation \
+            --region "${SSM_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${PRIVATE_EC2_1}" \
+            --query "Status" \
+            --output text)
+
+          if [ "${STATUS}" != "Success" ]; then
+            echo "EC2 #1 deployment failed."
+            exit 1
+          fi
+
+      # ------------------------------------------
+      # Deploy EC2 #2
+      # ------------------------------------------
+
+      - name: Deploy to Private EC2 #2
+        run: |
+
+          set -e
+
+          echo "=========================================="
+          echo "Deploying to EC2 #2"
+          echo "Instance: ${PRIVATE_EC2_2}"
+          echo "=========================================="
+
+          DEPLOY_SCRIPT=$(cat <<EOF
+          set -Eeuo pipefail
+
+          echo "=========================================="
+          echo "Starting EC2 #2 deployment"
+          echo "=========================================="
+
+          echo "Image:"
+          echo "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+
+          docker --version
+
+          echo ""
+          echo "Pulling new image..."
+
+          docker pull \
+            "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+
+          OLD_IMAGE=""
+
+          if docker ps \
+            --filter "name=^/${CONTAINER_NAME}$" \
+            --format "{{.Image}}" | grep -q .; then
+
+            OLD_IMAGE=\$(docker ps \
+              --filter "name=^/${CONTAINER_NAME}$" \
+              --format "{{.Image}}" | head -1)
+
+            echo "Current image: \${OLD_IMAGE}"
+
+          fi
+
+          echo ""
+          echo "Stopping old container..."
+
+          docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+
+          docker rm "${CONTAINER_NAME}" 2>/dev/null || true
+
+          echo ""
+          echo "Starting new container..."
+
+          docker run -d \
+            --name "${CONTAINER_NAME}" \
+            --restart unless-stopped \
+            -p "${APP_PORT}:${APP_PORT}" \
+            "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+
+          echo ""
+          echo "Running health check..."
+
+          SUCCESS=false
+
+          for i in {1..12}; do
+
+            sleep 5
+
+            if docker ps \
+              --filter "name=^/${CONTAINER_NAME}$" \
+              --filter "status=running" \
+              --format "{{.Names}}" |
+              grep -q "^${CONTAINER_NAME}$"; then
+
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                --max-time 5 \
+                "http://127.0.0.1:${APP_PORT}" > /dev/null; then
+
+                SUCCESS=true
+
+                echo "Application is healthy."
+
+                break
+
+              fi
+
+            fi
+
+            echo "Health check attempt \${i}/12 failed."
+
+          done
+
+          if [ "\${SUCCESS}" != "true" ]; then
 
             echo "=========================================="
-            echo "Deployment completed successfully."
+            echo "DEPLOYMENT FAILED"
             echo "=========================================="
+
+            docker ps -a \
+              --filter "name=^/${CONTAINER_NAME}$"
+
+            docker logs "${CONTAINER_NAME}" || true
+
+            if [ -n "\${OLD_IMAGE}" ]; then
+
+              echo "Starting rollback..."
+
+              docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+
+              docker rm "${CONTAINER_NAME}" 2>/dev/null || true
+
+              docker run -d \
+                --name "${CONTAINER_NAME}" \
+                --restart unless-stopped \
+                -p "${APP_PORT}:${APP_PORT}" \
+                "\${OLD_IMAGE}"
+
+              sleep 5
+
+              echo "Rollback completed."
+
+            fi
+
+            exit 1
+
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "EC2 #2 DEPLOYMENT SUCCESSFUL"
+          echo "=========================================="
+
+          docker ps \
+            --filter "name=^/${CONTAINER_NAME}$"
+
+          docker image prune -af \
+            --filter "until=72h" || true
+
+          EOF
+          )
+
+          COMMAND_ID=$(aws ssm send-command \
+            --region "${SSM_REGION}" \
+            --instance-ids "${PRIVATE_EC2_2}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy portfolio ${GITHUB_SHA}" \
+            --parameters "commands=${DEPLOY_SCRIPT}" \
+            --timeout-seconds 1200 \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: ${COMMAND_ID}"
+
+          echo ""
+          echo "Waiting for deployment..."
+
+          aws ssm wait command-executed \
+            --region "${SSM_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${PRIVATE_EC2_2}"
+
+          echo ""
+          echo "Deployment result:"
+
+          aws ssm get-command-invocation \
+            --region "${SSM_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${PRIVATE_EC2_2}" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output yaml
+
+          STATUS=$(aws ssm get-command-invocation \
+            --region "${SSM_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${PRIVATE_EC2_2}" \
+            --query "Status" \
+            --output text)
+
+          if [ "${STATUS}" != "Success" ]; then
+            echo "EC2 #2 deployment failed."
+            exit 1
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "ALL DEPLOYMENTS SUCCESSFUL"
+          echo "=========================================="
