@@ -20,16 +20,13 @@ env:
   # ==================================================
   # AWS
   # ==================================================
-
   S3_REGION: ap-south-1
   SSM_REGION: ap-south-2
-
   S3_BUCKET: adx6sh-portfolio
 
   # ==================================================
   # Docker / EC2
   # ==================================================
-
   IMAGE_NAME: adx6sh/adx6sh-portfolio-repository
   CONTAINER_NAME: adx6sh-portfolio
   APP_PORT: 3000
@@ -37,7 +34,6 @@ env:
   # ==================================================
   # Private EC2 instances
   # ==================================================
-
   PRIVATE_EC2_1: i-0c6fba2bb2b5cef4f
   PRIVATE_EC2_2: i-014c8ad0fc831917b
 
@@ -45,7 +41,6 @@ jobs:
   # ==================================================
   # CONTINUOUS INTEGRATION
   # ==================================================
-
   ci:
     name: Continuous Integration
     runs-on: ubuntu-latest
@@ -82,7 +77,6 @@ jobs:
           fi
 
           echo "Static export generated successfully."
-
           du -sh out/
 
           echo "Generated files:"
@@ -99,7 +93,6 @@ jobs:
   # ==================================================
   # S3 DEPLOYMENT
   # ==================================================
-
   deploy-s3:
     name: Deploy to Amazon S3
     runs-on: ubuntu-latest
@@ -132,7 +125,6 @@ jobs:
           fi
 
           echo "Build artifact verified."
-
           du -sh out/
 
       - name: Configure AWS credentials
@@ -177,7 +169,6 @@ jobs:
   # ==================================================
   # BUILD AND PUSH DOCKER IMAGE
   # ==================================================
-
   docker:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
@@ -236,7 +227,6 @@ jobs:
   # ==================================================
   # PRIVATE EC2 DEPLOYMENT VIA SSM
   # ==================================================
-
   deploy-ec2:
     name: Deploy to Private EC2 via SSM
     runs-on: ubuntu-latest
@@ -246,9 +236,11 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     # IMPORTANT:
+    #
     # Do NOT add environment: production here.
     #
     # The IAM trust policy currently expects:
+    #
     # repo:bettercalladx6sh/adx6sh:ref:refs/heads/main
 
     permissions:
@@ -256,10 +248,59 @@ jobs:
       contents: read
 
     steps:
-      # ------------------------------------------
-      # Configure AWS credentials using OIDC
-      # ------------------------------------------
+      # ==================================================
+      # TEMPORARY OIDC DEBUG
+      # ==================================================
+      - name: Debug GitHub OIDC claims
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+            const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
 
+            if (!requestUrl || !requestToken) {
+              core.setFailed(
+                "GitHub OIDC environment variables are not available."
+              );
+              return;
+            }
+
+            const response = await fetch(requestUrl, {
+              headers: {
+                Authorization: `bearer ${requestToken}`
+              }
+            });
+
+            if (!response.ok) {
+              core.setFailed(
+                `Failed to request OIDC token: ${response.status} ${response.statusText}`
+              );
+              return;
+            }
+
+            const data = await response.json();
+            const token = data.value;
+
+            const payload = JSON.parse(
+              Buffer.from(
+                token.split(".")[1],
+                "base64url"
+              ).toString()
+            );
+
+            console.log("OIDC claims:");
+            console.log("sub:", payload.sub);
+            console.log("aud:", payload.aud);
+            console.log("repository:", payload.repository);
+            console.log("ref:", payload.ref);
+            console.log(
+              "environment:",
+              payload.environment || "NONE"
+            );
+
+      # ==================================================
+      # CONFIGURE AWS CREDENTIALS
+      # ==================================================
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -267,11 +308,10 @@ jobs:
           aws-region: ${{ env.SSM_REGION }}
           audience: sts.amazonaws.com
 
-      # ------------------------------------------
-      # Verify AWS identity
-      # ------------------------------------------
-
-      - name: Verify AWS credentials
+      # ==================================================
+      # VERIFY AWS IDENTITY
+      # ==================================================
+      - name: Verify AWS identity
         run: |
           echo "=========================================="
           echo "AWS Identity"
@@ -279,10 +319,9 @@ jobs:
 
           aws sts get-caller-identity
 
-      # ------------------------------------------
-      # Verify SSM instances
-      # ------------------------------------------
-
+      # ==================================================
+      # VERIFY SSM INSTANCES
+      # ==================================================
       - name: Verify EC2 instances are online
         run: |
           set -e
@@ -305,13 +344,11 @@ jobs:
             --region "${SSM_REGION}" \
             --filters "Key=InstanceIds,Values=${PRIVATE_EC2_2}"
 
-      # ------------------------------------------
-      # Deploy EC2 #1
-      # ------------------------------------------
-
+      # ==================================================
+      # DEPLOY EC2 #1
+      # ==================================================
       - name: Deploy to Private EC2 #1
         run: |
-
           set -e
 
           echo "=========================================="
@@ -356,9 +393,7 @@ jobs:
             echo "Current image: \${OLD_IMAGE}"
 
           else
-
             echo "No existing container found."
-
           fi
 
           echo ""
@@ -407,9 +442,7 @@ jobs:
                 echo "Application is healthy."
 
                 break
-
               fi
-
             fi
 
             echo "Health check attempt \${i}/12 failed."
@@ -452,7 +485,6 @@ jobs:
             fi
 
             exit 1
-
           fi
 
           echo ""
@@ -511,13 +543,11 @@ jobs:
             exit 1
           fi
 
-      # ------------------------------------------
-      # Deploy EC2 #2
-      # ------------------------------------------
-
+      # ==================================================
+      # DEPLOY EC2 #2
+      # ==================================================
       - name: Deploy to Private EC2 #2
         run: |
-
           set -e
 
           echo "=========================================="
@@ -535,6 +565,9 @@ jobs:
           echo "Image:"
           echo "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
 
+          echo ""
+          echo "Checking Docker..."
+
           docker --version
 
           echo ""
@@ -542,6 +575,9 @@ jobs:
 
           docker pull \
             "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+
+          echo ""
+          echo "Checking existing container..."
 
           OLD_IMAGE=""
 
@@ -555,12 +591,17 @@ jobs:
 
             echo "Current image: \${OLD_IMAGE}"
 
+          else
+            echo "No existing container found."
           fi
 
           echo ""
           echo "Stopping old container..."
 
           docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+
+          echo ""
+          echo "Removing old container..."
 
           docker rm "${CONTAINER_NAME}" 2>/dev/null || true
 
@@ -600,9 +641,7 @@ jobs:
                 echo "Application is healthy."
 
                 break
-
               fi
-
             fi
 
             echo "Health check attempt \${i}/12 failed."
@@ -618,10 +657,14 @@ jobs:
             docker ps -a \
               --filter "name=^/${CONTAINER_NAME}$"
 
+            echo ""
+            echo "Container logs:"
+
             docker logs "${CONTAINER_NAME}" || true
 
             if [ -n "\${OLD_IMAGE}" ]; then
 
+              echo ""
               echo "Starting rollback..."
 
               docker stop "${CONTAINER_NAME}" 2>/dev/null || true
@@ -641,7 +684,6 @@ jobs:
             fi
 
             exit 1
-
           fi
 
           echo ""
