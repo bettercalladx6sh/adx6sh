@@ -131,10 +131,14 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            console.log("Repository:", context.repo.owner + "/" + context.repo.repo);
-             console.log("Ref:", context.ref);
-             console.log("Event:", context.eventName);
-             console.log("SHA:", context.sha);
+            console.log(
+              "Repository:",
+              context.repo.owner + "/" + context.repo.repo
+            );
+
+            console.log("Ref:", context.ref);
+            console.log("Event:", context.eventName);
+            console.log("SHA:", context.sha);
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -145,7 +149,10 @@ jobs:
 
       - name: Verify AWS credentials
         run: |
-          echo "AWS identity:"
+          echo "=========================================="
+          echo "AWS identity"
+          echo "=========================================="
+
           aws sts get-caller-identity
 
       - name: Deploy website to S3
@@ -246,7 +253,12 @@ jobs:
 
     # IMPORTANT:
     #
-    # Do NOT add environment: production here.
+    # Do NOT add:
+    #
+    # environment:
+    #   name: production
+    #
+    # here.
     #
     # The IAM trust policy currently expects:
     #
@@ -261,51 +273,29 @@ jobs:
       # TEMPORARY OIDC DEBUG
       # ==================================================
       - name: Debug GitHub OIDC claims
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
-            const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+        shell: bash
+        run: |
+          set -euo pipefail
 
-            if (!requestUrl || !requestToken) {
-              core.setFailed(
-                "GitHub OIDC environment variables are not available."
-              );
-              return;
-            }
+          echo "=========================================="
+          echo "GitHub OIDC Claims"
+          echo "=========================================="
 
-            const response = await fetch(requestUrl, {
-              headers: {
-                Authorization: `bearer ${requestToken}`
-              }
-            });
+          OIDC_TOKEN=$(curl -sSf \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
+            | jq -r '.value')
 
-            if (!response.ok) {
-              core.setFailed(
-                `Failed to request OIDC token: ${response.status} ${response.statusText}`
-              );
-              return;
-            }
-
-            const data = await response.json();
-            const token = data.value;
-
-            const payload = JSON.parse(
-              Buffer.from(
-                token.split(".")[1],
-                "base64url"
-              ).toString()
-            );
-
-            console.log("OIDC claims:");
-            console.log("sub:", payload.sub);
-            console.log("aud:", payload.aud);
-            console.log("repository:", payload.repository);
-            console.log("ref:", payload.ref);
-            console.log(
-              "environment:",
-              payload.environment || "NONE"
-            );
+          echo "${OIDC_TOKEN}" |
+            cut -d '.' -f2 |
+            base64 -d 2>/dev/null |
+            jq '{
+              sub,
+              aud,
+              repository,
+              ref,
+              environment
+            }'
 
       # ==================================================
       # CONFIGURE AWS CREDENTIALS
@@ -393,11 +383,13 @@ jobs:
 
           if docker ps \
             --filter "name=^/${CONTAINER_NAME}$" \
-            --format "{{.Image}}" | grep -q .; then
+            --format "{{.Image}}" |
+            grep -q .; then
 
             OLD_IMAGE=\$(docker ps \
               --filter "name=^/${CONTAINER_NAME}$" \
-              --format "{{.Image}}" | head -1)
+              --format "{{.Image}}" |
+              head -1)
 
             echo "Current image: \${OLD_IMAGE}"
 
@@ -494,6 +486,7 @@ jobs:
             fi
 
             exit 1
+
           fi
 
           echo ""
@@ -592,11 +585,13 @@ jobs:
 
           if docker ps \
             --filter "name=^/${CONTAINER_NAME}$" \
-            --format "{{.Image}}" | grep -q .; then
+            --format "{{.Image}}" |
+            grep -q .; then
 
             OLD_IMAGE=\$(docker ps \
               --filter "name=^/${CONTAINER_NAME}$" \
-              --format "{{.Image}}" | head -1)
+              --format "{{.Image}}" |
+              head -1)
 
             echo "Current image: \${OLD_IMAGE}"
 
@@ -693,6 +688,7 @@ jobs:
             fi
 
             exit 1
+
           fi
 
           echo ""
