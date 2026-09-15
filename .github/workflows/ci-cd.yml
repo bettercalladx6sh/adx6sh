@@ -127,19 +127,6 @@ jobs:
           echo "Build artifact verified."
           du -sh out/
 
-      - name: Debug GitHub context
-        uses: actions/github-script@v7
-        with:
-          script: |
-            console.log(
-              "Repository:",
-              context.repo.owner + "/" + context.repo.repo
-            );
-
-            console.log("Ref:", context.ref);
-            console.log("Event:", context.eventName);
-            console.log("SHA:", context.sha);
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -253,16 +240,10 @@ jobs:
 
     # IMPORTANT:
     #
-    # Do NOT add:
+    # Do NOT add the production environment here.
     #
-    # environment:
-    #   name: production
-    #
-    # here.
-    #
-    # The IAM trust policy currently expects:
-    #
-    # repo:bettercalladx6sh/adx6sh:ref:refs/heads/main
+    # The SSM IAM role trust policy is restricted to
+    # the main branch OIDC subject.
 
     permissions:
       id-token: write
@@ -347,14 +328,22 @@ jobs:
       # DEPLOY EC2 #1
       # ==================================================
       - name: Deploy to Private EC2 #1
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           echo "=========================================="
           echo "Deploying to EC2 #1"
           echo "Instance: ${PRIVATE_EC2_1}"
           echo "=========================================="
 
+          IMAGE="${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+
+          echo "Image: ${IMAGE}"
+
+          # ------------------------------------------------
+          # Build deployment script
+          # ------------------------------------------------
           DEPLOY_SCRIPT=$(cat <<EOF
           set -Eeuo pipefail
 
@@ -363,7 +352,7 @@ jobs:
           echo "=========================================="
 
           echo "Image:"
-          echo "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+          echo "${IMAGE}"
 
           echo ""
           echo "Checking Docker..."
@@ -373,8 +362,7 @@ jobs:
           echo ""
           echo "Pulling new image..."
 
-          docker pull \
-            "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+          docker pull "${IMAGE}"
 
           echo ""
           echo "Checking existing container..."
@@ -414,7 +402,7 @@ jobs:
             --name "${CONTAINER_NAME}" \
             --restart unless-stopped \
             -p "${APP_PORT}:${APP_PORT}" \
-            "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+            "${IMAGE}"
 
           echo ""
           echo "Running health check..."
@@ -503,12 +491,30 @@ jobs:
           EOF
           )
 
+          # ------------------------------------------------
+          # Convert deployment script to JSON
+          #
+          # AWS SSM expects commands as an array.
+          # This prevents quotes/newlines inside the script
+          # from breaking the AWS CLI --parameters parser.
+          # ------------------------------------------------
+          COMMANDS_JSON=$(
+            printf '%s\n' "${DEPLOY_SCRIPT}" |
+            jq -R -s '
+              split("\n")
+              | map(select(length > 0))
+            '
+          )
+
+          echo ""
+          echo "Sending deployment command through SSM..."
+
           COMMAND_ID=$(aws ssm send-command \
             --region "${SSM_REGION}" \
             --instance-ids "${PRIVATE_EC2_1}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy portfolio ${GITHUB_SHA}" \
-            --parameters "commands=${DEPLOY_SCRIPT}" \
+            --parameters "commands=${COMMANDS_JSON}" \
             --timeout-seconds 1200 \
             --query "Command.CommandId" \
             --output text)
@@ -549,14 +555,22 @@ jobs:
       # DEPLOY EC2 #2
       # ==================================================
       - name: Deploy to Private EC2 #2
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           echo "=========================================="
           echo "Deploying to EC2 #2"
           echo "Instance: ${PRIVATE_EC2_2}"
           echo "=========================================="
 
+          IMAGE="${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+
+          echo "Image: ${IMAGE}"
+
+          # ------------------------------------------------
+          # Build deployment script
+          # ------------------------------------------------
           DEPLOY_SCRIPT=$(cat <<EOF
           set -Eeuo pipefail
 
@@ -565,7 +579,7 @@ jobs:
           echo "=========================================="
 
           echo "Image:"
-          echo "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+          echo "${IMAGE}"
 
           echo ""
           echo "Checking Docker..."
@@ -575,8 +589,7 @@ jobs:
           echo ""
           echo "Pulling new image..."
 
-          docker pull \
-            "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+          docker pull "${IMAGE}"
 
           echo ""
           echo "Checking existing container..."
@@ -616,7 +629,7 @@ jobs:
             --name "${CONTAINER_NAME}" \
             --restart unless-stopped \
             -p "${APP_PORT}:${APP_PORT}" \
-            "${IMAGE_NAME}:${{ needs.docker.outputs.image_tag }}"
+            "${IMAGE}"
 
           echo ""
           echo "Running health check..."
@@ -705,12 +718,26 @@ jobs:
           EOF
           )
 
+          # ------------------------------------------------
+          # Convert deployment script to JSON
+          # ------------------------------------------------
+          COMMANDS_JSON=$(
+            printf '%s\n' "${DEPLOY_SCRIPT}" |
+            jq -R -s '
+              split("\n")
+              | map(select(length > 0))
+            '
+          )
+
+          echo ""
+          echo "Sending deployment command through SSM..."
+
           COMMAND_ID=$(aws ssm send-command \
             --region "${SSM_REGION}" \
             --instance-ids "${PRIVATE_EC2_2}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy portfolio ${GITHUB_SHA}" \
-            --parameters "commands=${DEPLOY_SCRIPT}" \
+            --parameters "commands=${COMMANDS_JSON}" \
             --timeout-seconds 1200 \
             --query "Command.CommandId" \
             --output text)
