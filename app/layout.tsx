@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Adarsh Anilkumar",
+  title: "Adarsh",
   description: "",
 };
 
