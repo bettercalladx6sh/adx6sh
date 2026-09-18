@@ -65,7 +65,8 @@ jobs:
             ref
           }'
 
-      - name: Debug GitHub OIDC claims
+      - name: Debug GitHub OIDC subject
+        id: oidc
         run: |
           set -euo pipefail
 
@@ -75,11 +76,6 @@ jobs:
 
           TOKEN=$(echo "${TOKEN_RESPONSE}" | jq -r '.value')
 
-          if [ -z "${TOKEN}" ] || [ "${TOKEN}" = "null" ]; then
-            echo "Failed to obtain OIDC token"
-            exit 1
-          fi
-
           PAYLOAD=$(echo "${TOKEN}" | cut -d '.' -f2)
 
           case $((${#PAYLOAD} % 4)) in
@@ -87,14 +83,8 @@ jobs:
             3) PAYLOAD="${PAYLOAD}=" ;;
           esac
 
-          echo "OIDC claims:"
-          echo "${PAYLOAD}" | base64 -d 2>/dev/null | jq '{
-            aud,
-            sub,
-            repository,
-            repository_owner,
-            ref
-          }'
+          echo "GitHub OIDC sub:"
+          echo "${PAYLOAD}" | base64 -d 2>/dev/null | jq -r '.sub'
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
