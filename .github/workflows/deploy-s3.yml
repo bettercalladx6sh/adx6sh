@@ -1,0 +1,59 @@
+name: Deploy to S3
+
+on:
+  workflow_call:
+
+env:
+  S3_REGION: ap-south-1
+  S3_BUCKET: adx6sh-portfolio
+
+jobs:
+  deploy:
+    name: Deploy Website to S3
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download Next.js build
+        uses: actions/download-artifact@v4
+        with:
+          name: nextjs-static-build
+          path: out/
+
+      - name: Verify build artifact
+        run: |
+          set -euo pipefail
+
+          test -d out
+          echo "Build artifact verified."
+          du -sh out/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.S3_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Deploy website to S3
+        run: |
+          set -euo pipefail
+
+          echo "Bucket: s3://${S3_BUCKET}"
+          echo "Region: ${S3_REGION}"
+
+          aws s3 sync out/             "s3://${S3_BUCKET}"             --region "${S3_REGION}"             --delete
+
+      - name: Verify S3 deployment
+        run: |
+          echo "S3 deployment successful."
+          aws s3 ls             "s3://${S3_BUCKET}"             --region "${S3_REGION}"             --recursive | head -30

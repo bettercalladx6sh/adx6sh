@@ -1,0 +1,42 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  deploy-s3:
+    name: Deploy to S3
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy-s3.yml
+    secrets: inherit
+
+  docker:
+    name: Build & Push Docker → ECR
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/docker-ecr.yml
+    secrets: inherit
+
+  deploy-ec2:
+    name: Deploy to Private EC2 → SSM
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy-ec2.yml
+    with:
+      image_tag: ${{ needs.docker.outputs.image_tag }}
+    secrets: inherit

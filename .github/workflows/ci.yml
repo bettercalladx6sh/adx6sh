@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  workflow_call:
+
+jobs:
+  ci:
+    name: Continuous Integration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test --if-present
+
+      - name: Build application
+        run: npm run build
+
+      - name: Verify static export
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "out" ]; then
+            echo "ERROR: out/ directory was not generated."
+            exit 1
+          fi
+
+          echo "Static export generated successfully."
+          du -sh out/
+          find out -maxdepth 2 -type f | head -50
+
+      - name: Upload Next.js build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-static-build
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
